@@ -127,7 +127,7 @@ def generate_launch_description():
         declare_amcl_config_cmd,
         declare_costmap_config_cmd,
         declare_log_level_cmd,
-
+        declare_use_sim_time_cmd,
         
 
         # launch the nodes

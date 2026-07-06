@@ -35,7 +35,7 @@ def generate_launch_description():
             get_package_share_directory('lms_starter'), 'launch'),
             '/lms_starter_launch.py']
         )
-    )   
+    )
 
     motor_controller_nodes = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
