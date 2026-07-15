@@ -2,11 +2,12 @@
 #include <vector>
 #include <cmath>
 
-#include "rclcpp/rclcpp.hpp"
+#include <rclcpp/rclcpp.hpp>
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 
 #include "volksface/msg/vel_gp.hpp"
+#include "volksface/volksbot.h"
 
 #include "obstacle_avoidance/k-freespace.h"
 
@@ -17,7 +18,7 @@ public:
             "scan", 10, std::bind(&ObstacleAvoidanceNode::laser_callback, this, std::placeholders::_1));
 
         // Publisher fuer Fahrbefehle
-        cmd_pub_ = this->create_publisher<volksface::msg::VelGP>("vel_gp", 10);
+        cmd_pub_ = this->create_publisher<volksface::msg::VelGP>(VB::TOPIC_NAME_VEL_GP, 10);
 
         RCLCPP_INFO(this->get_logger(), "Obstacle Avoidance Node gestartet.");
     }
