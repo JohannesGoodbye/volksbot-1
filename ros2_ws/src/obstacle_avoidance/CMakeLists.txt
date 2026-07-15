@@ -10,7 +10,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(volksbot_msgs REQUIRED)
+find_package(volksface REQUIRED)
 
 # Include-Verzeichnis für den Header bekannt machen
 include_directories(include)
@@ -26,7 +26,7 @@ ament_target_dependencies(obstacle_avoidance_node
   rclcpp
   sensor_msgs
   geometry_msgs
-  volksbot_msgs
+  volksface
 )
 
 # Installation im Workspace-Target-Verzeichnis festlegen
