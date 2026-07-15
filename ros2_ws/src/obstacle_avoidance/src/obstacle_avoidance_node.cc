@@ -7,6 +7,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 
 #include "volksface/msg/vel_gp.hpp"
+#include "volksface/msg/rover.hpp"
 #include "volksface/volksbot.h"
 
 #include "obstacle_avoidance/k-freespace.h"
@@ -14,9 +15,14 @@
 class ObstacleAvoidanceNode : public rclcpp::Node {
 public:
     ObstacleAvoidanceNode() : Node("obstacle_avoidance_node") {
-        laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-            "scan", 10, std::bind(&ObstacleAvoidanceNode::laser_callback, this, std::placeholders::_1));
-
+        // Standard-Parameter deklarieren (Fallback, falls kein Rover-Topic empfangen wird)
+        this->declare_parameter<double>("default_track_width", 0.50);
+        track_width_ = this->get_parameter("default_track_width").as_double();
+        rover_detected_ = false;
+        // Subscriber für die Rover-Konfiguration (Topic-Name analog zur Odometrie)
+        rover_sub_ = this->create_subscription<VB::msg::Rover>(VB::TOPIC_NAME_ROVER, 10, std::bind(&ObstacleAvoidanceNode::rover_callback, this, std::placeholders::_1));
+        // Laser-Subscriber
+        laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>("scan", 10, std::bind(&ObstacleAvoidanceNode::laser_callback, this, std::placeholders::_1));
         // Publisher fuer Fahrbefehle
         cmd_pub_ = this->create_publisher<volksface::msg::VelGP>(VB::TOPIC_NAME_VEL_GP, 10);
 
@@ -24,7 +30,29 @@ public:
     }
 
 private:
+    // Callback für die automatische Erkennung der Roboterdaten
+    void rover_callback(const volksbot_msgs::msg::Rover::SharedPtr rover) {
+        if (rover->is_valid) {
+            // wheel_base kommt in cm aus der YAML, wir brauchen Meter für die Kinematik
+            track_width_ = rover->wheel_base / 100.0; 
+            
+            if (!rover_detected_) {
+                RCLCPP_INFO(this->get_logger(), 
+                            "Rover erkannt: '%s' | Spurbreite auf %.2fm gesetzt.", 
+                            rover->name.c_str(), track_width_);
+                rover_detected_ = true;
+            }
+        }
+    }
+
     void laser_callback(const sensor_msgs::msg::LaserScan::SharedPtr scan) {
+        // Optional: Verhindert Fahrbefehle, bevor wir wissen, welcher Roboter angeschlossen ist
+        if (!rover_detected_) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
+                                 "Noch keine Rover-Konfiguration empfangen. Node inaktiv.");
+            return;
+        }
+
         int nr = scan->ranges.size();
         if (nr == 0) return;
 
@@ -54,16 +82,16 @@ private:
             y[i] = r * std::sin(angle);
         }
 
-        // 1. Ausweichwinkel über k-freespace berechnen
+        // 1. Ausweichwinkel berechnen
         double steering_angle = calc_freespace(nr, distances.data(), x.data(), y.data());
 
-        // 2. Bestimmung von linearer und angularer Wunschgeschwindigkeit
+        // 2. Wunschgeschwindigkeiten bestimmen
         double linear_vel = 0.0;
-        double angular_vel = steering_angle * 0.6; // Drehung dämpfen
+        double angular_vel = steering_angle * 0.6; 
 
-        double max_speed = 0.25;      // m/s
-        double stop_distance = 0.4;   // Meter
-        double slowdown_zone = 1.2;   // Meter
+        double max_speed = 0.25;      
+        double stop_distance = 0.4;   
+        double slowdown_zone = 1.2;   
 
         if (min_distance_front <= stop_distance) {
             linear_vel = 0.0;
@@ -77,23 +105,21 @@ private:
             linear_vel = max_speed;
         }
 
-        // 3. Umrechnung in Radgeschwindigkeiten (Differentialantrieb)
-        // Spurbreite des Volksbots (Abstand zwischen den Rädern in Metern)
-        double track_width = 0.45; 
-
-        auto msg = volksbot_msgs::msg::VelGP();
-        msg.left  = linear_vel - (angular_vel * track_width / 2.0);
-        msg.right = linear_vel + (angular_vel * track_width / 2.0);
-
-        RCLCPP_INFO(this->get_logger(), "Motoren -> Links: %.2f | Rechts: %.2f (Distanz: %.2fm)", 
-                    msg.left, msg.right, min_distance_front);
+        // 3. Umrechnung in Radgeschwindigkeiten mit der AUTOMATISCH ermittelten Spurbreite
+        auto msg = volksface::msg::VelGP();
+        msg.left  = linear_vel - (angular_vel * track_width_ / 2.0);
+        msg.right = linear_vel + (angular_vel * track_width_ / 2.0);
 
         // 4. Senden an den Volksbot
         cmd_pub_->publish(msg);
     }
 
+    rclcpp::Subscription<VB::msg::Rover>::SharedPtr rover_sub_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr laser_sub_;
     rclcpp::Publisher<volksface::msg::VelGP>::SharedPtr cmd_pub_;
+
+    double track_width_;
+    bool rover_detected_;
 };
 
 int main(int argc, char * argv[]) {
