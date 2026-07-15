@@ -46,22 +46,24 @@ private:
     }
 
     void laser_callback(const sensor_msgs::msg::LaserScan::SharedPtr scan) {
-        // Optional: Verhindert Fahrbefehle, bevor wir wissen, welcher Roboter angeschlossen ist
         if (!rover_detected_) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
-                                 "Noch keine Rover-Konfiguration empfangen. Node inaktiv.");
+                                "Noch keine Rover-Konfiguration empfangen. Node inaktiv.");
             return;
         }
 
         int nr = scan->ranges.size();
         if (nr == 0) return;
 
-        std::vector<int> distances(nr);
-        std::vector<double> x(nr);
-        std::vector<double> y(nr);
+        std::vector<int> filtered_distances;
+        std::vector<double> filtered_x;
+        std::vector<double> filtered_y;
 
         double min_distance_front = scan->range_max;
         
+        // 135 Grad in Bogenmaß (die Mitte des 270°-Scanners)
+        const double angle_straight_ahead = 135.0 * M_PI / 180.0; 
+
         for (int i = 0; i < nr; ++i) {
             double r = scan->ranges[i];
             
@@ -69,21 +71,43 @@ private:
                 r = scan->range_max; 
             }
 
-            double angle = scan->angle_min + i * scan->angle_increment;
+            // Der rohe Winkel aus dem ROS-Topic (0 bis 270 Grad)
+            double raw_angle = scan->angle_min + i * scan->angle_increment;
 
-            if (angle > -0.35 && angle < 0.35) {
+            // --- TRANSFORMATION AUF ROBOTER-KOORDINATEN ---
+            // Wir verschieben den Winkel so, dass 135° (geradeaus) zu 0° wird.
+            // Wenn der Scanner im Uhrzeigersinn dreht, ziehen wir den Winkel ab.
+            double robot_angle = angle_straight_ahead - raw_angle;
+
+            // --- 180° FILTER (Alles hinter der Achse ignorieren) ---
+            // Wir betrachten nur den Bereich von -90° (rechts) bis +90° (links)
+            if (robot_angle < -M_PI / 2.0 || robot_angle > M_PI / 2.0) {
+                continue; 
+            }
+
+            // Sicherheits-Check direkt vor dem Roboter (-20° bis +20° im Roboter-Frame)
+            if (robot_angle > -0.35 && robot_angle < 0.35) {
                 if (r < min_distance_front) {
                     min_distance_front = r;
                 }
             }
 
-            distances[i] = static_cast<int>(r * 1000.0);
-            x[i] = r * std::cos(angle);
-            y[i] = r * std::sin(angle);
+            // Daten für den k-freespace Algorithmus speichern
+            filtered_distances.push_back(static_cast<int>(r * 1000.0));
+            
+            // Kartesische Koordinaten berechnen (jetzt korrekt an der Fahrtrichtung ausgerichtet!)
+            filtered_x.push_back(r * std::cos(robot_angle));
+            filtered_y.push_back(r * std::sin(robot_angle));
         }
 
-        // 1. Ausweichwinkel berechnen
-        double steering_angle = calc_freespace(nr, distances.data(), x.data(), y.data());
+        int num_filtered_points = filtered_distances.size();
+        if (num_filtered_points == 0) return;
+
+        // 1. Ausweichwinkel mit den korrekt ausgerichteten Daten berechnen
+        double steering_angle = calc_freespace(num_filtered_points, 
+                                            filtered_distances.data(), 
+                                            filtered_x.data(), 
+                                            filtered_y.data());
 
         // 2. Wunschgeschwindigkeiten bestimmen
         double linear_vel = 0.0;
@@ -95,7 +119,7 @@ private:
 
         if (min_distance_front <= stop_distance) {
             linear_vel = 0.0;
-            RCLCPP_WARN(this->get_logger(), "NOTSTOPP! Hindernis extrem nah: %.2fm", min_distance_front);
+            RCLCPP_WARN(this->get_logger(), "NOTSTOPP! Hindernis im Weg: %.2fm", min_distance_front);
         } 
         else if (min_distance_front < slowdown_zone) {
             double factor = (min_distance_front - stop_distance) / (slowdown_zone - stop_distance);
@@ -105,14 +129,15 @@ private:
             linear_vel = max_speed;
         }
 
-        // 3. Umrechnung in Radgeschwindigkeiten mit der AUTOMATISCH ermittelten Spurbreite
+        // 3. Umrechnung in Radgeschwindigkeiten
         auto msg = volksface::msg::VelGP();
         msg.left  = linear_vel - (angular_vel * track_width_ / 2.0);
         msg.right = linear_vel + (angular_vel * track_width_ / 2.0);
 
         // 4. Senden an den Volksbot
         cmd_pub_->publish(msg);
-    }
+}
+
 
     rclcpp::Subscription<VB::msg::Rover>::SharedPtr rover_sub_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr laser_sub_;
